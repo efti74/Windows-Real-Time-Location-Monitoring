@@ -1,4 +1,4 @@
-﻿# Build OrgAssetAgent.exe standalone executable - Defender-friendly, no UPX packing
+# Build OrgAssetAgent.exe standalone executable - Defender-friendly, no UPX packing
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $scriptDir
 
@@ -84,6 +84,8 @@ $pyArgs = @(
     "--exclude-module", "certifi",
     "--exclude-module", "charset_normalizer",
     "--exclude-module", "idna",
+    "--exclude-module", "winsdk",
+    "--exclude-module", "winrt",
     "--exclude-module", "dotenv",
     "agent/agent.py"
 )

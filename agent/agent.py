@@ -64,6 +64,7 @@ def http_post_json(url: str, payload: dict, token: Optional[str] = None, timeout
     except urllib.error.URLError as err:
         raise RuntimeError(f"Network error: {err.reason}")
 
+# Optional winsdk import (winsdk is 38MB; native WinRT via Windows PowerShell is preferred to keep binary light)
 try:
     from winsdk.windows.devices.geolocation import (
         Geolocator,
@@ -274,8 +275,67 @@ def get_ip_fallback_location():
     raise RuntimeError("Fallback network geolocation services were unreachable.")
 
 
+# Pure Windows native WinRT geolocation query (zero external Python packages, uses built-in Windows runtime)
+WINRT_NATIVE_PS = """
+Add-Type -AssemblyName System.Runtime.WindowsRuntime
+$asTaskGeneric = ([System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object { $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1' })[0]
+Function Await($WinRtTask, $ResultType) {
+    $asTask = $asTaskGeneric.MakeGenericMethod($ResultType)
+    $netTask = $asTask.Invoke($null, @($WinRtTask))
+    $netTask.Wait(8000) | Out-Null
+    $netTask.Result
+}
+[Windows.Devices.Geolocation.Geolocator, Windows.Devices.Geolocation, ContentType = WindowsRuntime] | Out-Null
+$locator = [Windows.Devices.Geolocation.Geolocator]::new()
+$locator.DesiredAccuracy = [Windows.Devices.Geolocation.PositionAccuracy]::High
+$pos = Await ($locator.GetGeopositionAsync()) ([Windows.Devices.Geolocation.Geoposition])
+[PSCustomObject]@{
+    lat = $pos.Coordinate.Point.Position.Latitude
+    lon = $pos.Coordinate.Point.Position.Longitude
+    acc = $pos.Coordinate.Accuracy
+    src = [int]$pos.Coordinate.PositionSource
+} | ConvertTo-Json -Compress
+"""
+
+
+def _query_windows_geolocator_native():
+    """Query Windows Built-in Location directly via native WinRT subsystem (zero-dependency)."""
+    no_window_flag = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+    proc = subprocess.run(
+        ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", WINRT_NATIVE_PS],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        creationflags=no_window_flag,
+    )
+    if proc.returncode != 0 or not proc.stdout.strip():
+        raise RuntimeError(f"Native WinRT query failed: {proc.stderr.strip()[:100]}")
+    data = json.loads(proc.stdout.strip())
+    raw_source = data.get("src")
+    source_map = {
+        0: "Cellular Tower Triangulation",
+        1: "Satellite GNSS/GPS",
+        2: "Wi-Fi Triangulation (Microsoft/Google WPS)",
+        3: "ISP Network IP (Coarse)",
+        4: "Windows Location Platform",
+        5: "Default Location Service",
+    }
+    if raw_source is not None:
+        source_label = source_map.get(int(raw_source), f"Windows Location ({raw_source})")
+    else:
+        source_label = "Wi-Fi / Hardware Geolocation"
+
+    return {
+        "latitude": float(data["lat"]),
+        "longitude": float(data["lon"]),
+        "accuracy_meters": float(data.get("acc") or 10.0),
+        "position_source": source_label,
+        "recorded_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
 def _query_windows_geolocator_sync():
-    """Worker function executed in isolated thread to query Windows Built-in Location."""
+    """Worker function executed in isolated thread to query Windows Built-in Location via winsdk."""
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
@@ -323,11 +383,22 @@ def _query_windows_geolocator_sync():
 
 def get_windows_location():
     """Query coordinates directly from Windows Built-in Location Service."""
-    if not WINSDK_AVAILABLE:
-        raise RuntimeError("Windows Location SDK (winsdk) is not available on this machine.")
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(_query_windows_geolocator_sync)
-        return future.result(timeout=10.0)
+    # Method 1: Ultra-fast native WinRT via Windows PowerShell (0 external dependencies, 100% native)
+    try:
+        return _query_windows_geolocator_native()
+    except Exception as native_err:
+        logging.debug("Native WinRT method reported: %s", native_err)
+
+    # Method 2: winsdk fallback if installed
+    if WINSDK_AVAILABLE:
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(_query_windows_geolocator_sync)
+                return future.result(timeout=10.0)
+        except Exception as winsdk_err:
+            logging.debug("winsdk method reported: %s", winsdk_err)
+
+    raise RuntimeError("Windows native geolocation subsystem did not return coordinates.")
 
 
 async def get_location():
