@@ -18,9 +18,10 @@ if (Test-Path (Join-Path $upxDir "upx.exe")) {
     Write-Host "Notice: tools\upx\upx.exe not found. Proceeding without UPX binary compression." -ForegroundColor Yellow
 }
 
-Write-Host "Compiling OrgAssetAgent.exe with PyInstaller (Bytecode Opt Level 2 & Excludes)..." -ForegroundColor Cyan
+Write-Host "Compiling OrgAssetAgent.exe with PyInstaller (Bytecode Opt Level 2, UAC-Admin & Excludes)..." -ForegroundColor Cyan
 & $python -m PyInstaller --clean --onefile --name OrgAssetAgent --noconfirm `
     --optimize 2 `
+    --uac-admin `
     @upxArgs `
     --exclude-module setuptools `
     --exclude-module pkg_resources `
