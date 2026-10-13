@@ -1,16 +1,16 @@
-# Employee Laptop Asset Tracker - Unified Requirements
-# Backend
+﻿# Windows Real Time Location Monitoring - Unified Dependencies
+
+# Backend (FastAPI + MongoDB)
 fastapi>=0.115,<1
 uvicorn[standard]>=0.30,<1
 pymongo[srv]>=4.8,<5
 pydantic>=2.8,<3
 python-dotenv>=1.0.0
 
-# Agent (Windows)
-winsdk>=1.0.0b10
-requests>=2.32,<3
-
-# Dashboard
+# Dashboard (Streamlit)
 streamlit>=1.38,<2
 pandas>=2.2,<3
 pydeck>=0.9.0
+
+# Agent (Windows 10/11)
+# Uses Python standard library and native Windows WinRT APIs (0 external dependencies required)

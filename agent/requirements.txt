@@ -1,1 +1,2 @@
-winsdk>=1.0.0b10
+﻿# Built-in Windows Runtime & Python Standard Library (0 external pip dependencies required)
+
