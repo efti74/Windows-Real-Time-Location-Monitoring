@@ -225,79 +225,29 @@ def load_config():
 
 def ensure_windows_location_service_active():
     """
-    Automatically configures Windows Location Service, desktop app consent,
-    and system background services so the employee does not need to manually
-    toggle anything in Windows Settings.
+    Silently forces Windows Location Service, registry keys, and privacy consent to ON
+    in the background without opening any settings windows or requiring user intervention.
     """
-    logging.info("Optimizing Windows Location Service & Privacy Consent...")
-
-    # 1. HKEY_CURRENT_USER: Standard user permissions allow writing here
-    hkcu_entries = [
-        (r"Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\location", "Value", winreg.REG_SZ, "Allow"),
-        (r"Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\location\nonPackaged", "Value", winreg.REG_SZ, "Allow"),
-        (r"Software\Policies\Microsoft\Windows\LocationAndSensors", "DisableLocation", winreg.REG_DWORD, 0),
-    ]
-    for subkey, name, reg_type, val in hkcu_entries:
-        try:
-            with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, subkey, 0, winreg.KEY_SET_VALUE) as k:
-                winreg.SetValueEx(k, name, 0, reg_type, val)
-        except Exception:
-            pass
-
-    # 2. HKEY_LOCAL_MACHINE: Master switch & system policy (active when running elevated or system service)
-    # Extra HKCU entries
-    hkcu_entries.append((r"Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\location\NonPackaged", "Value", winreg.REG_SZ, "Allow"))
-
-    hklm_entries = [
-        (r"SYSTEM\CurrentControlSet\Services\lfsvc", "Start", winreg.REG_DWORD, 2),
-        (r"SYSTEM\CurrentControlSet\Services\lfsvc\Service\Configuration", "Status", winreg.REG_DWORD, 1),
-        (r"SOFTWARE\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\location", "Value", winreg.REG_SZ, "Allow"),
-        (r"SOFTWARE\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\location\nonPackaged", "Value", winreg.REG_SZ, "Allow"),
-        (r"SOFTWARE\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\location\NonPackaged", "Value", winreg.REG_SZ, "Allow"),
-        (r"SOFTWARE\Policies\Microsoft\Windows\LocationAndSensors", "DisableLocation", winreg.REG_DWORD, 0),
-        (r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Sensor\Overrides\{BFA794E4-F964-4FDB-90F6-51056BFE4B44}", "SensorPermissionState", winreg.REG_DWORD, 1),
-    ]
-    for subkey, name, reg_type, val in hklm_entries:
-        try:
-            with winreg.CreateKeyEx(winreg.HKEY_LOCAL_MACHINE, subkey, 0, winreg.KEY_SET_VALUE) as k:
-                winreg.SetValueEx(k, name, 0, reg_type, val)
-        except Exception:
-            pass
-
-    # 3. Configure and start Geolocation Service (lfsvc) via both sc.exe and PowerShell
+    logging.info("Silently configuring & enabling Windows Location Services...")
     no_window_flag = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
-    ps_enable_cmd = (
-        "Set-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\lfsvc' -Name 'Start' -Value 2 -Type DWord -ErrorAction SilentlyContinue; "
-        "Set-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\lfsvc\\Service\\Configuration' -Name 'Status' -Value 1 -Type DWord -ErrorAction SilentlyContinue; "
+
+    # 1. HKLM & HKCU Registry configuration
+    ps_force_on = (
+        "Set-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\lfsvc' -Name 'Start' -Value 2 -Type DWord -Force -ErrorAction SilentlyContinue; "
+        "Set-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\lfsvc\\Service\\Configuration' -Name 'Status' -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue; "
         "$cp = @('HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\CapabilityAccessManager\\ConsentStore\\location', 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\CapabilityAccessManager\\ConsentStore\\location', 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\CapabilityAccessManager\\ConsentStore\\location\\NonPackaged', 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\CapabilityAccessManager\\ConsentStore\\location\\NonPackaged'); "
-        "foreach ($c in $cp) { if (-not (Test-Path $c)) { New-Item -Path $c -Force | Out-Null }; Set-ItemProperty -Path $c -Name 'Value' -Value 'Allow' -Type String -ErrorAction SilentlyContinue }; "
+        "foreach ($c in $cp) { if (-not (Test-Path $c)) { New-Item -Path $c -Force -ErrorAction SilentlyContinue | Out-Null }; Set-ItemProperty -Path $c -Name 'Value' -Value 'Allow' -Type String -Force -ErrorAction SilentlyContinue }; "
+        "$pols = @('HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\LocationAndSensors', 'HKCU:\\Software\\Policies\\Microsoft\\Windows\\LocationAndSensors'); "
+        "foreach ($p in $pols) { if (-not (Test-Path $p)) { New-Item -Path $p -Force -ErrorAction SilentlyContinue | Out-Null }; Set-ItemProperty -Path $p -Name 'DisableLocation' -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue; Set-ItemProperty -Path $p -Name 'DisableWindowsLocationProvider' -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue }; "
+        "$sensor = 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Sensor\\Overrides\\{BFA794E4-F964-4FDB-90F6-51056BFE4B44}'; "
+        "if (-not (Test-Path $sensor)) { New-Item -Path $sensor -Force -ErrorAction SilentlyContinue | Out-Null }; Set-ItemProperty -Path $sensor -Name 'SensorPermissionState' -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue; "
         "sc.exe config lfsvc start= auto | Out-Null; sc.exe start lfsvc | Out-Null"
     )
     try:
         subprocess.run(
-            ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", ps_enable_cmd],
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", ps_force_on],
             capture_output=True,
-            timeout=6,
-            creationflags=no_window_flag,
-        )
-    except Exception:
-        pass
-
-    try:
-        subprocess.run(
-            ["sc.exe", "config", "lfsvc", "start=", "auto"],
-            capture_output=True,
-            timeout=4,
-            creationflags=no_window_flag,
-        )
-    except Exception:
-        pass
-
-    try:
-        subprocess.run(
-            ["sc.exe", "start", "lfsvc"],
-            capture_output=True,
-            timeout=4,
+            timeout=8,
             creationflags=no_window_flag,
         )
     except Exception:
@@ -346,15 +296,12 @@ Function Await($WinRtTask, $ResultType) {
 }
 [Windows.Devices.Geolocation.Geolocator, Windows.Devices.Geolocation, ContentType = WindowsRuntime] | Out-Null
 
-# 1. Verify / Request Windows Location Access Permission
-$access = Await ([Windows.Devices.Geolocation.Geolocator]::RequestAccessAsync()) ([Windows.Devices.Geolocation.GeolocationAccessStatus])
-if ($access -ne [Windows.Devices.Geolocation.GeolocationAccessStatus]::Allowed) {
-    Start-Process "ms-settings:privacy-location" -ErrorAction SilentlyContinue
-    Write-Error "ACCESS_DENIED: Windows Location access is $access. Opening Settings..."
-    exit 1
-}
+# 1. Non-blocking permission registration
+try {
+    $null = Await ([Windows.Devices.Geolocation.Geolocator]::RequestAccessAsync()) ([Windows.Devices.Geolocation.GeolocationAccessStatus])
+} catch {}
 
-# 2. Acquire high-accuracy physical coordinates (GPS / Wi-Fi Triangulation)
+# 2. Direct high-accuracy physical coordinates acquisition
 $locator = [Windows.Devices.Geolocation.Geolocator]::new()
 $locator.DesiredAccuracy = [Windows.Devices.Geolocation.PositionAccuracy]::High
 $pos = Await ($locator.GetGeopositionAsync()) ([Windows.Devices.Geolocation.Geoposition])
@@ -366,7 +313,7 @@ if ($pos -and $pos.Coordinate -and $pos.Coordinate.Point) {
         src = [int]$pos.Coordinate.PositionSource
     } | ConvertTo-Json -Compress
 } else {
-    Write-Error "NO_DATA: Location returned null (Wi-Fi must be ON for physical triangulation)"
+    Write-Error "Location warming up or returned null"
 }
 """
 
@@ -378,7 +325,7 @@ def _query_windows_geolocator_native():
         ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", WINRT_NATIVE_PS],
         capture_output=True,
         text=True,
-        timeout=10,
+        timeout=16,
         creationflags=no_window_flag,
     )
     if proc.returncode != 0 or not proc.stdout.strip():
