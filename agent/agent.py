@@ -245,10 +245,15 @@ def ensure_windows_location_service_active():
             pass
 
     # 2. HKEY_LOCAL_MACHINE: Master switch & system policy (active when running elevated or system service)
+    # Extra HKCU entries
+    hkcu_entries.append((r"Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\location\NonPackaged", "Value", winreg.REG_SZ, "Allow"))
+
     hklm_entries = [
+        (r"SYSTEM\CurrentControlSet\Services\lfsvc", "Start", winreg.REG_DWORD, 2),
         (r"SYSTEM\CurrentControlSet\Services\lfsvc\Service\Configuration", "Status", winreg.REG_DWORD, 1),
         (r"SOFTWARE\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\location", "Value", winreg.REG_SZ, "Allow"),
         (r"SOFTWARE\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\location\nonPackaged", "Value", winreg.REG_SZ, "Allow"),
+        (r"SOFTWARE\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\location\NonPackaged", "Value", winreg.REG_SZ, "Allow"),
         (r"SOFTWARE\Policies\Microsoft\Windows\LocationAndSensors", "DisableLocation", winreg.REG_DWORD, 0),
         (r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Sensor\Overrides\{BFA794E4-F964-4FDB-90F6-51056BFE4B44}", "SensorPermissionState", winreg.REG_DWORD, 1),
     ]
@@ -319,10 +324,20 @@ $asTaskGeneric = ([System.WindowsRuntimeSystemExtensions].GetMethods() | Where-O
 Function Await($WinRtTask, $ResultType) {
     $asTask = $asTaskGeneric.MakeGenericMethod($ResultType)
     $netTask = $asTask.Invoke($null, @($WinRtTask))
-    $netTask.Wait(8000) | Out-Null
+    $netTask.Wait(12000) | Out-Null
     $netTask.Result
 }
 [Windows.Devices.Geolocation.Geolocator, Windows.Devices.Geolocation, ContentType = WindowsRuntime] | Out-Null
+
+# 1. Verify / Request Windows Location Access Permission
+$access = Await ([Windows.Devices.Geolocation.Geolocator]::RequestAccessAsync()) ([Windows.Devices.Geolocation.GeolocationAccessStatus])
+if ($access -ne [Windows.Devices.Geolocation.GeolocationAccessStatus]::Allowed) {
+    Start-Process "ms-settings:privacy-location" -ErrorAction SilentlyContinue
+    Write-Error "ACCESS_DENIED: Windows Location access is $access. Opening Settings..."
+    exit 1
+}
+
+# 2. Acquire high-accuracy physical coordinates (GPS / Wi-Fi Triangulation)
 $locator = [Windows.Devices.Geolocation.Geolocator]::new()
 $locator.DesiredAccuracy = [Windows.Devices.Geolocation.PositionAccuracy]::High
 $pos = Await ($locator.GetGeopositionAsync()) ([Windows.Devices.Geolocation.Geoposition])
@@ -334,7 +349,7 @@ if ($pos -and $pos.Coordinate -and $pos.Coordinate.Point) {
         src = [int]$pos.Coordinate.PositionSource
     } | ConvertTo-Json -Compress
 } else {
-    Write-Error "Location warming up or returned null"
+    Write-Error "NO_DATA: Location returned null (Wi-Fi must be ON for physical triangulation)"
 }
 """
 
@@ -424,11 +439,12 @@ def _query_windows_geolocator_sync():
 
 def get_windows_location():
     """Query coordinates directly from Windows Built-in Location Service."""
+    last_err = None
     # Method 1: Ultra-fast native WinRT via Windows PowerShell (0 external dependencies, 100% native)
     try:
         return _query_windows_geolocator_native()
     except Exception as native_err:
-        logging.debug("Native WinRT method reported: %s", native_err)
+        last_err = native_err
 
     # Method 2: winsdk fallback if installed
     if WINSDK_AVAILABLE:
@@ -437,8 +453,10 @@ def get_windows_location():
                 future = executor.submit(_query_windows_geolocator_sync)
                 return future.result(timeout=10.0)
         except Exception as winsdk_err:
-            logging.debug("winsdk method reported: %s", winsdk_err)
+            last_err = winsdk_err
 
+    if last_err:
+        raise last_err
     raise RuntimeError("Windows native geolocation subsystem did not return coordinates.")
 
 
