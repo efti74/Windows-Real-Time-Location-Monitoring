@@ -264,8 +264,25 @@ def ensure_windows_location_service_active():
         except Exception:
             pass
 
-    # 3. Configure and start Geolocation Service (lfsvc)
+    # 3. Configure and start Geolocation Service (lfsvc) via both sc.exe and PowerShell
     no_window_flag = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+    ps_enable_cmd = (
+        "Set-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\lfsvc' -Name 'Start' -Value 2 -Type DWord -ErrorAction SilentlyContinue; "
+        "Set-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\lfsvc\\Service\\Configuration' -Name 'Status' -Value 1 -Type DWord -ErrorAction SilentlyContinue; "
+        "$cp = @('HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\CapabilityAccessManager\\ConsentStore\\location', 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\CapabilityAccessManager\\ConsentStore\\location', 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\CapabilityAccessManager\\ConsentStore\\location\\NonPackaged', 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\CapabilityAccessManager\\ConsentStore\\location\\NonPackaged'); "
+        "foreach ($c in $cp) { if (-not (Test-Path $c)) { New-Item -Path $c -Force | Out-Null }; Set-ItemProperty -Path $c -Name 'Value' -Value 'Allow' -Type String -ErrorAction SilentlyContinue }; "
+        "sc.exe config lfsvc start= auto | Out-Null; sc.exe start lfsvc | Out-Null"
+    )
+    try:
+        subprocess.run(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", ps_enable_cmd],
+            capture_output=True,
+            timeout=6,
+            creationflags=no_window_flag,
+        )
+    except Exception:
+        pass
+
     try:
         subprocess.run(
             ["sc.exe", "config", "lfsvc", "start=", "auto"],
