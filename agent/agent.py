@@ -133,34 +133,66 @@ def auto_enroll_device(api_url: str):
         "machine_id": f"{hostname}-{os.environ.get('USERNAME', 'user')}",
     }
 
-    try:
-        data = http_post_json(f"{api_url}/agent/auto-enroll", payload, timeout=15)
-
-        cfg = {
-            "api_base_url": api_url,
-            "device_id": data["device_id"],
-            "device_token": data["device_token"],
-        }
-
-        # Save config next to executable
-        if getattr(sys, "frozen", False):
-            save_path = Path(sys.executable).resolve().parent / "device_config.json"
-        else:
-            save_path = Path(__file__).resolve().parent / "device_config.json"
-
+    # Render free tier sleeps after 15 min; cold boot takes 30-50s.
+    # Retry up to 8 times with generous timeouts so the agent never crashes during cold starts.
+    max_retries = 8
+    last_error = None
+    for attempt in range(1, max_retries + 1):
         try:
-            save_path.parent.mkdir(parents=True, exist_ok=True)
-            with save_path.open("w", encoding="utf-8") as f:
-                json.dump(cfg, f, indent=2)
-            logging.info("Configuration saved automatically to: %s", save_path)
-        except Exception as save_err:
-            logging.warning("Could not persist config to disk (%s), using in-memory token.", save_err)
+            if attempt > 1:
+                logging.info("[Attempt %d/%d] Contacting Gateway (waking up cloud server)...", attempt, max_retries)
+            data = http_post_json(f"{api_url}/agent/auto-enroll", payload, timeout=45.0)
 
-        logging.info("Auto-enrollment SUCCESS! Assigned Device ID: %s", data["device_id"])
-        return cfg
-    except Exception as err:
-        logging.error("Auto-enrollment failed: %s", err)
-        raise
+            cfg = {
+                "api_base_url": api_url,
+                "device_id": data["device_id"],
+                "device_token": data["device_token"],
+            }
+
+            # Persist configuration to multiple locations (exe directory + LocalAppData + ProgramData)
+            # so moving the exe to Desktop or another directory never loses device registration.
+            target_dirs = []
+            if getattr(sys, "frozen", False):
+                target_dirs.append(Path(sys.executable).resolve().parent)
+            else:
+                target_dirs.append(Path(__file__).resolve().parent)
+
+            local_app_data = os.environ.get("LOCALAPPDATA", os.environ.get("APPDATA", ""))
+            if local_app_data:
+                target_dirs.append(Path(local_app_data) / "OrgAssetTracker")
+
+            program_data = os.environ.get("PROGRAMDATA", r"C:\ProgramData")
+            if program_data:
+                target_dirs.append(Path(program_data) / "OrgAssetTracker")
+
+            saved_anywhere = False
+            for target_dir in target_dirs:
+                try:
+                    target_dir.mkdir(parents=True, exist_ok=True)
+                    save_path = target_dir / "device_config.json"
+                    with save_path.open("w", encoding="utf-8") as f:
+                        json.dump(cfg, f, indent=2)
+                    saved_anywhere = True
+                    logging.info("Configuration saved automatically to: %s", save_path)
+                except Exception:
+                    pass
+
+            if not saved_anywhere:
+                logging.warning("Could not persist config to disk, using in-memory token.")
+
+            logging.info("Auto-enrollment SUCCESS! Assigned Device ID: %s", data["device_id"])
+            return cfg
+        except Exception as err:
+            last_error = err
+            if attempt < max_retries:
+                logging.warning("Gateway waking up / connecting (%s). Retrying in 6 seconds... (%d/%d)", err, attempt, max_retries)
+                time.sleep(6)
+            else:
+                logging.error("Auto-enrollment failed after %d attempts: %s", max_retries, err)
+
+    if last_error:
+        raise last_error
+    raise RuntimeError("Failed to auto-enroll device.")
 
 
 def load_config():
@@ -252,17 +284,22 @@ def ensure_windows_location_service_active():
 
 def get_ip_fallback_location():
     """Fallback geolocation if physical Windows Location is temporarily unavailable or warming up."""
-    for service_url in ["https://ipapi.co/json/", "https://ipwho.is/"]:
+    # List of dependable, zero-auth IP geolocation services
+    services = [
+        ("https://ipwho.is/", lambda d: (float(d["latitude"]), float(d["longitude"]), d.get("city") or "Network")),
+        ("https://ipinfo.io/json", lambda d: (float(d["loc"].split(",")[0]), float(d["loc"].split(",")[1]), d.get("city") or "Network")),
+        ("http://ip-api.com/json/", lambda d: (float(d["lat"]), float(d["lon"]), d.get("city") or "Network")),
+        ("https://ipapi.co/json/", lambda d: (float(d.get("latitude") or d.get("lat")), float(d.get("longitude") or d.get("lon")), d.get("city") or "Network")),
+    ]
+    for service_url, parser in services:
         try:
             req = urllib.request.Request(
                 service_url,
                 headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) OrgAssetAgent/1.0"},
             )
-            with urllib.request.urlopen(req, timeout=6.0) as resp:
+            with urllib.request.urlopen(req, timeout=5.0) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
-                lat = float(data.get("latitude") or data.get("lat"))
-                lon = float(data.get("longitude") or data.get("lon"))
-                city = data.get("city") or data.get("region") or "Network"
+                lat, lon, city = parser(data)
                 return {
                     "latitude": lat,
                     "longitude": lon,
@@ -289,12 +326,16 @@ Function Await($WinRtTask, $ResultType) {
 $locator = [Windows.Devices.Geolocation.Geolocator]::new()
 $locator.DesiredAccuracy = [Windows.Devices.Geolocation.PositionAccuracy]::High
 $pos = Await ($locator.GetGeopositionAsync()) ([Windows.Devices.Geolocation.Geoposition])
-[PSCustomObject]@{
-    lat = $pos.Coordinate.Point.Position.Latitude
-    lon = $pos.Coordinate.Point.Position.Longitude
-    acc = $pos.Coordinate.Accuracy
-    src = [int]$pos.Coordinate.PositionSource
-} | ConvertTo-Json -Compress
+if ($pos -and $pos.Coordinate -and $pos.Coordinate.Point) {
+    [PSCustomObject]@{
+        lat = $pos.Coordinate.Point.Position.Latitude
+        lon = $pos.Coordinate.Point.Position.Longitude
+        acc = $pos.Coordinate.Accuracy
+        src = [int]$pos.Coordinate.PositionSource
+    } | ConvertTo-Json -Compress
+} else {
+    Write-Error "Location warming up or returned null"
+}
 """
 
 
@@ -433,7 +474,20 @@ async def main():
     # Automatically ensure Windows location service and consent are active
     ensure_windows_location_service_active()
 
-    cfg = load_config()
+    cfg = None
+    startup_retries = 0
+    while cfg is None:
+        try:
+            cfg = load_config()
+        except Exception as startup_err:
+            startup_retries += 1
+            logging.warning(
+                "Gateway connection attempt #%d paused (%s). Retrying in 8 seconds... (please keep this window open)",
+                startup_retries,
+                startup_err,
+            )
+            time.sleep(8)
+
     logging.info("==================================================")
     logging.info("     OrgAssetAgent - Real-Time Tracking Engine    ")
     logging.info("==================================================")
@@ -483,6 +537,10 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         logging.info("Agent stopped by user.")
     except Exception as exc:
-        logging.error("Agent startup failed: %s", exc)
-        time.sleep(3)
+        logging.error("Agent stopped unexpectedly: %s", exc)
+        print("\n[INFO] Agent will close in 15 seconds, or press Enter to exit...")
+        try:
+            input()
+        except Exception:
+            time.sleep(15)
         sys.exit(1)
