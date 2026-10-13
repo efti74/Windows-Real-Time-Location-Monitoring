@@ -6,7 +6,9 @@ from typing import Optional
 
 import certifi
 from dotenv import load_dotenv
+from pathlib import Path
 from fastapi import FastAPI, Header, HTTPException, Query
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 from pymongo import MongoClient, DESCENDING, ASCENDING
 from pymongo.errors import PyMongoError
@@ -242,4 +244,48 @@ def reactivate_device(device_id: str, authorization: Optional[str] = Header(defa
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Device not found")
     return {"status": "reactivated", "device_id": device_id, "device_token": device_token}
+
+@app.get("/agent/download")
+def download_agent():
+    """Serves the latest standalone OrgAssetAgent.exe for direct downloads."""
+    exe_path = Path(__file__).resolve().parent / "static" / "OrgAssetAgent.exe"
+    if not exe_path.exists():
+        raise HTTPException(status_code=404, detail="Agent binary not found on server")
+    return FileResponse(
+        path=str(exe_path),
+        filename="OrgAssetAgent.exe",
+        media_type="application/octet-stream"
+    )
+
+
+@app.get("/agent/install.ps1")
+def get_installer_script():
+    """One-line PowerShell installer that downloads, unblocks, and runs the agent with zero SmartScreen popups."""
+    base_url = PUBLIC_BASE_URL or "https://asset-tracker-backend-tqx7.onrender.com"
+    script = f"""# Windows Real-Time Location Monitoring - Silent Employee Installer
+$ErrorActionPreference = "Stop"
+Write-Host "==================================================" -ForegroundColor Cyan
+Write-Host " Windows Real-Time Location Monitoring Installer  " -ForegroundColor Cyan
+Write-Host "==================================================" -ForegroundColor Cyan
+
+$targetDir = "$env:LOCALAPPDATA\\OrgAssetTracker"
+if (-not (Test-Path $targetDir)) {{
+    New-Item -ItemType Directory -Path $targetDir -Force | Out-Null
+}}
+$exePath = "$targetDir\\OrgAssetAgent.exe"
+
+Write-Host "[1/3] Downloading tracker agent from Gateway..." -ForegroundColor Yellow
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+$client = New-Object System.Net.WebClient
+$client.DownloadFile("{base_url}/agent/download", $exePath)
+
+Write-Host "[2/3] Applying security trust..." -ForegroundColor Yellow
+Unblock-File -Path $exePath -ErrorAction SilentlyContinue
+
+Write-Host "[3/3] Launching tracker agent..." -ForegroundColor Green
+Start-Process -FilePath $exePath
+
+Write-Host "`n[SUCCESS] Agent is now running and tracking successfully!" -ForegroundColor Green
+"""
+    return Response(content=script, media_type="text/plain; charset=utf-8")
 
