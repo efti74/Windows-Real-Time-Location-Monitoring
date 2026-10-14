@@ -226,28 +226,25 @@ def load_config():
 def ensure_windows_location_service_active():
     """
     Silently forces Windows Location Service, registry keys, and privacy consent to ON
-    in the background without opening any settings windows or requiring user intervention.
+    in the background without locking Windows Settings or displaying "managed by your organization".
     Works seamlessly across Windows 10, Windows 11, and Windows 11 24H2.
     """
     logging.info("Silently configuring & enabling Windows Location Services...")
     no_window_flag = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
 
-    # 1. HKLM & HKCU Registry configuration + AppPrivacy policies + SystemSettingsAdminFlows
+    # 1. HKLM & HKCU Consent configuration + Clean up any enterprise policy locks
     ps_force_on = (
+        "Remove-Item -Path 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\AppPrivacy' -Recurse -Force -ErrorAction SilentlyContinue; "
+        "Remove-Item -Path 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\LocationAndSensors' -Recurse -Force -ErrorAction SilentlyContinue; "
+        "Remove-Item -Path 'HKCU:\\Software\\Policies\\Microsoft\\Windows\\LocationAndSensors' -Recurse -Force -ErrorAction SilentlyContinue; "
         "Set-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\lfsvc' -Name 'Start' -Value 2 -Type DWord -Force -ErrorAction SilentlyContinue; "
         "Set-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\lfsvc\\Service\\Configuration' -Name 'Status' -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue; "
         "$cp = @('HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\CapabilityAccessManager\\ConsentStore\\location', 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\CapabilityAccessManager\\ConsentStore\\location', 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\CapabilityAccessManager\\ConsentStore\\location\\NonPackaged', 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\CapabilityAccessManager\\ConsentStore\\location\\NonPackaged'); "
         "foreach ($c in $cp) { if (-not (Test-Path $c)) { New-Item -Path $c -Force -ErrorAction SilentlyContinue | Out-Null }; Set-ItemProperty -Path $c -Name 'Value' -Value 'Allow' -Type String -Force -ErrorAction SilentlyContinue }; "
-        "$pols = @('HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\LocationAndSensors', 'HKCU:\\Software\\Policies\\Microsoft\\Windows\\LocationAndSensors'); "
-        "foreach ($p in $pols) { if (-not (Test-Path $p)) { New-Item -Path $p -Force -ErrorAction SilentlyContinue | Out-Null }; Set-ItemProperty -Path $p -Name 'DisableLocation' -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue; Set-ItemProperty -Path $p -Name 'DisableWindowsLocationProvider' -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue }; "
-        "if (-not (Test-Path 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\AppPrivacy')) { New-Item -Path 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\AppPrivacy' -Force -ErrorAction SilentlyContinue | Out-Null }; "
-        "Set-ItemProperty -Path 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\AppPrivacy' -Name 'LetAppsAccessLocation' -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue; "
-        "Set-ItemProperty -Path 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\AppPrivacy' -Name 'LetAppsAccessLocation_UserInControl' -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue; "
-        "Set-ItemProperty -Path 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\AppPrivacy' -Name 'LetDesktopAppsAccessLocation' -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue; "
         "$sensor = 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Sensor\\Overrides\\{BFA794E4-F964-4FDB-90F6-51056BFE4B44}'; "
         "if (-not (Test-Path $sensor)) { New-Item -Path $sensor -Force -ErrorAction SilentlyContinue | Out-Null }; Set-ItemProperty -Path $sensor -Name 'SensorPermissionState' -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue; "
         "if (Test-Path \"$env:WINDIR\\System32\\SystemSettingsAdminFlows.exe\") { Start-Process \"$env:WINDIR\\System32\\SystemSettingsAdminFlows.exe\" -ArgumentList 'SetCamSystemGlobal location 1' -Wait -WindowStyle Hidden -ErrorAction SilentlyContinue }; "
-        "Set-Service Lfsvc -StartupType Automatic -ErrorAction SilentlyContinue; Restart-Service Lfsvc -Force -ErrorAction SilentlyContinue"
+        "Set-Service Lfsvc -StartupType Automatic -ErrorAction SilentlyContinue; Start-Service Lfsvc -ErrorAction SilentlyContinue"
     )
     try:
         subprocess.run(

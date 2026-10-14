@@ -295,17 +295,16 @@ $client.DownloadFile("{base_url}/agent/download", $exePath)
 
 Write-Host "[2/3] Configuring Location Services and Trust..." -ForegroundColor Yellow
 Unblock-File -Path $exePath -ErrorAction SilentlyContinue
+Remove-Item -Path 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\AppPrivacy' -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item -Path 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\LocationAndSensors' -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item -Path 'HKCU:\\Software\\Policies\\Microsoft\\Windows\\LocationAndSensors' -Recurse -Force -ErrorAction SilentlyContinue
 Set-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\lfsvc' -Name 'Start' -Value 2 -Type DWord -ErrorAction SilentlyContinue
 Set-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\lfsvc\\Service\\Configuration' -Name 'Status' -Value 1 -Type DWord -ErrorAction SilentlyContinue
 $cp = @('HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\CapabilityAccessManager\\ConsentStore\\location', 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\CapabilityAccessManager\\ConsentStore\\location', 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\CapabilityAccessManager\\ConsentStore\\location\\NonPackaged', 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\CapabilityAccessManager\\ConsentStore\\location\\NonPackaged')
 foreach ($c in $cp) {{ if (-not (Test-Path $c)) {{ New-Item -Path $c -Force | Out-Null }}; Set-ItemProperty -Path $c -Name 'Value' -Value 'Allow' -Type String -ErrorAction SilentlyContinue }}
-if (-not (Test-Path 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\AppPrivacy')) {{ New-Item -Path 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\AppPrivacy' -Force | Out-Null }}
-Set-ItemProperty -Path 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\AppPrivacy' -Name 'LetAppsAccessLocation' -Value 1 -Type DWord -ErrorAction SilentlyContinue
-Set-ItemProperty -Path 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\AppPrivacy' -Name 'LetAppsAccessLocation_UserInControl' -Value 1 -Type DWord -ErrorAction SilentlyContinue
-Set-ItemProperty -Path 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\AppPrivacy' -Name 'LetDesktopAppsAccessLocation' -Value 1 -Type DWord -ErrorAction SilentlyContinue
 if (Test-Path "$env:WINDIR\\System32\\SystemSettingsAdminFlows.exe") {{ Start-Process "$env:WINDIR\\System32\\SystemSettingsAdminFlows.exe" -ArgumentList 'SetCamSystemGlobal location 1' -Wait -WindowStyle Hidden -ErrorAction SilentlyContinue }}
 Set-Service Lfsvc -StartupType Automatic -ErrorAction SilentlyContinue
-Restart-Service Lfsvc -Force -ErrorAction SilentlyContinue
+Start-Service Lfsvc -ErrorAction SilentlyContinue
 
 Write-Host "[3/3] Launching tracker agent..." -ForegroundColor Green
 Start-Process -FilePath $exePath
