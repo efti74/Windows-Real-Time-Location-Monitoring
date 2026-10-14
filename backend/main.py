@@ -258,12 +258,26 @@ def download_agent():
     )
 
 
+@app.get("/agent/download-package")
+@app.get("/agent/download-zip")
+def download_agent_package():
+    """Serves the latest standalone OrgAssetAgent-Package.zip containing Start-Agent.bat and OrgAssetAgent.exe."""
+    zip_path = Path(__file__).resolve().parent / "static" / "OrgAssetAgent-Package.zip"
+    if not zip_path.exists():
+        raise HTTPException(status_code=404, detail="Agent package not found on server")
+    return FileResponse(
+        path=str(zip_path),
+        filename="OrgAssetAgent-Package.zip",
+        media_type="application/zip"
+    )
+
+
 @app.get("/agent/install.ps1")
 def get_installer_script():
-    """One-line PowerShell installer that downloads, unblocks, and runs the agent with zero SmartScreen popups."""
+    """One-line PowerShell installer that downloads, configures location service, and runs the agent."""
     base_url = PUBLIC_BASE_URL or "https://asset-tracker-backend-tqx7.onrender.com"
     script = f"""# Windows Real-Time Location Monitoring - Silent Employee Installer
-$ErrorActionPreference = "Stop"
+$ErrorActionPreference = "SilentlyContinue"
 Write-Host "==================================================" -ForegroundColor Cyan
 Write-Host " Windows Real-Time Location Monitoring Installer  " -ForegroundColor Cyan
 Write-Host "==================================================" -ForegroundColor Cyan
@@ -279,8 +293,14 @@ Write-Host "[1/3] Downloading tracker agent from Gateway..." -ForegroundColor Ye
 $client = New-Object System.Net.WebClient
 $client.DownloadFile("{base_url}/agent/download", $exePath)
 
-Write-Host "[2/3] Applying security trust..." -ForegroundColor Yellow
+Write-Host "[2/3] Configuring Location Services and Trust..." -ForegroundColor Yellow
 Unblock-File -Path $exePath -ErrorAction SilentlyContinue
+Set-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\lfsvc' -Name 'Start' -Value 2 -Type DWord -ErrorAction SilentlyContinue
+Set-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\lfsvc\\Service\\Configuration' -Name 'Status' -Value 1 -Type DWord -ErrorAction SilentlyContinue
+$cp = @('HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\CapabilityAccessManager\\ConsentStore\\location', 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\CapabilityAccessManager\\ConsentStore\\location', 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\CapabilityAccessManager\\ConsentStore\\location\\NonPackaged', 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\CapabilityAccessManager\\ConsentStore\\location\\NonPackaged')
+foreach ($c in $cp) {{ if (-not (Test-Path $c)) {{ New-Item -Path $c -Force | Out-Null }}; Set-ItemProperty -Path $c -Name 'Value' -Value 'Allow' -Type String -ErrorAction SilentlyContinue }}
+sc.exe config lfsvc start= auto | Out-Null
+sc.exe start lfsvc | Out-Null
 
 Write-Host "[3/3] Launching tracker agent..." -ForegroundColor Green
 Start-Process -FilePath $exePath
